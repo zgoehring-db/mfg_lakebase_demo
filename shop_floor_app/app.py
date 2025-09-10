@@ -2,6 +2,7 @@ import streamlit as st
 import psycopg
 import os
 import time
+import uuid
 import re
 from databricks import sdk
 from psycopg import sql
@@ -13,16 +14,23 @@ postgres_password = None
 last_password_refresh = 0
 connection_pool = None
 
+user_email = st.context.headers.get('X-Forwarded-Email')
+
+
 def refresh_oauth_token():
     """Refresh OAuth token if expired."""
     global postgres_password, last_password_refresh
     if postgres_password is None or time.time() - last_password_refresh > 900:
         print("Refreshing PostgreSQL OAuth token")
         try:
-            postgres_password = workspace_client.config.oauth_token().access_token
+            cred = workspace_client.database.generate_database_credential(
+                request_id=str(uuid.uuid4()),
+                instance_names=[os.getenv('LAKEBASE_INSTANCE_NAME')]
+            )
+            postgres_password = cred.token
             last_password_refresh = time.time()
         except Exception as e:
-            st.error(f"❌ Failed to refresh OAuth token: {str(e)}")
+            st.error(f"❌ Failed to refresh token: {str(e)}")
             st.stop()
 
 def get_connection_pool():
@@ -54,118 +62,144 @@ def get_connection():
     
     return get_connection_pool().connection()
 
-def get_schema_name():
-    """Get the schema name in the format {PGAPPNAME}_schema_{PGUSER}."""
-    pgappname = os.getenv("PGAPPNAME", "my_app")
-    pguser = os.getenv("PGUSER", "").replace('-', '')
-    return f"{pgappname}_schema_{pguser}"
-
-def init_database():
-    """Initialize database schema and table."""
+def fetch_recommended_routes():
+    """Fetch the recommended routes from Lakebase."""
+    schema = os.getenv('LAKEBASE_SCHEMA')
+    routes_table_name = os.getenv('LAKEBASE_ROUTES_TABLE_NAME')
     with get_connection() as conn:
         with conn.cursor() as cur:
-            schema_name = get_schema_name()
-            
-            cur.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema_name)))
-            cur.execute(sql.SQL("""
-                CREATE TABLE IF NOT EXISTS {}.todos (
-                    id SERIAL PRIMARY KEY,
-                    task TEXT NOT NULL,
-                    completed BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """).format(sql.Identifier(schema_name)))
-            conn.commit()
-            return True
-
-def add_todo(task):
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            schema = get_schema_name()
-            cur.execute(sql.SQL("INSERT INTO {}.todos (task) VALUES (%s)").format(sql.Identifier(schema)), (task.strip(),))
-            conn.commit()
-
-def get_todos():
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            schema = get_schema_name()
-            cur.execute(sql.SQL("SELECT id, task, completed, created_at FROM {}.todos ORDER BY created_at DESC").format(sql.Identifier(schema)))
+            cur.execute(f"""
+                SELECT part_id, priority, quantity_pending, due_date, recommended_machine_id, route_confidence
+                FROM {schema}.{routes_table_name}
+                ORDER BY priority DESC, due_date ASC
+            """)
             return cur.fetchall()
 
-def toggle_todo(todo_id):
+def fetch_machines():
+    """Fetch the machines from Lakebase."""
+    schema = os.getenv('LAKEBASE_SCHEMA')
+    routes_table_name = os.getenv('LAKEBASE_ROUTES_TABLE_NAME')
     with get_connection() as conn:
         with conn.cursor() as cur:
-            schema = get_schema_name()
-            cur.execute(sql.SQL("UPDATE {}.todos SET completed = NOT completed WHERE id = %s").format(sql.Identifier(schema)), (todo_id,))
-            conn.commit()
+            cur.execute(f"""
+                SELECT distinct recommended_machine_id
+                FROM {schema}.{routes_table_name}
+                ORDER BY 1 asc
+            """)
+            return cur.fetchall()
 
-
-def delete_todo(todo_id):
+def fetch_parts():
+    """Fetch the machines from Lakebase."""
+    schema = os.getenv('LAKEBASE_SCHEMA')
+    routes_table_name = os.getenv('LAKEBASE_ROUTES_TABLE_NAME')
     with get_connection() as conn:
         with conn.cursor() as cur:
-            schema = get_schema_name()
-            cur.execute(sql.SQL("DELETE FROM {}.todos WHERE id = %s").format(sql.Identifier(schema)), (todo_id,))
+            cur.execute(f"""
+                SELECT distinct part_id,  
+                    CAST(SUBSTRING(part_id FROM 'part_(.*)') AS INTEGER) as part_num
+                FROM {schema}.{routes_table_name}
+                ORDER BY part_num ASC
+            """)
+            return cur.fetchall()
+
+def fetch_overrides():
+    """Fetch current assignment overrides."""
+    schema = os.getenv('LAKEBASE_SCHEMA')
+    overrides_table = os.getenv('LAKEBASE_OVERRIDES_TABLE_NAME')
+    
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT part_id, assigned_machine_id, assigned_by, assigned_at, notes
+                FROM {schema}.{overrides_table}
+                ORDER BY assigned_at DESC
+            """)
+            return cur.fetchall()
+
+def add_override(part_id, assigned_machine_id, assigned_by, notes):
+    """Add or update an assignment override."""
+    schema = os.getenv('LAKEBASE_SCHEMA')
+    overrides_table = os.getenv('LAKEBASE_OVERRIDES_TABLE_NAME')
+    
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                INSERT INTO {schema}.{overrides_table} (part_id, assigned_machine_id, assigned_by, assigned_at, notes)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP, %s)
+            """, (part_id, assigned_machine_id, assigned_by, notes))
             conn.commit()
-
-@st.fragment
-def display_todos():
-    st.subheader("📋 Your Todos")
-    
-    todos = get_todos()
-    
-    if not todos:
-        st.info("🎉 No todos yet! Add one above to get started.")
-    else:
-        for todo_id, task, completed, created_at in todos:
-            col1, col2, col3 = st.columns([0.1, 0.7, 0.2])
-            
-            with col1:
-                if st.checkbox("", value=completed, key=f"check_{todo_id}"):
-                    if not completed:
-                        toggle_todo(todo_id)
-                        st.rerun(scope="fragment")
-                elif completed:
-                    toggle_todo(todo_id)
-                    st.rerun(scope="fragment")
-            
-            with col2:
-                st.markdown(f"~~{task}~~ ✅" if completed else task)
-                st.caption(f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}")
-            
-            with col3:
-                if st.button("🗑️", key=f"delete_{todo_id}"):
-                    delete_todo(todo_id)
-                    st.rerun(scope="fragment")
-
 
 # Streamlit UI
 def main():
     st.set_page_config(
-        page_title="Todo List App",
-        page_icon="✅",
+        page_title="Shop Floor Routing Manager",
+        page_icon="🏭",
         layout="wide"
     )
     
-    st.title("📝 Todo List App")
-    st.markdown("---")
-    
-    # Initialize database
-    if not init_database():
+    st.title("🏭 Shop Floor Routing Manager")
+    st.caption(f"Signed in as: {user_email}")
+
+    # Load data
+    try:
+        recommended_routes_data = fetch_recommended_routes()
+        machines_data = fetch_machines() 
+        overrides_data = fetch_overrides()
+        parts_data = fetch_parts()
+    except Exception as e:
+        st.error(f"❌ Error loading data: {str(e)}")
         st.stop()
+
+    st.subheader("Recommended Routes")
+    try:
+        if recommended_routes_data:
+            import pandas as pd
+            pd_recommended_routes = pd.DataFrame(recommended_routes_data, columns=['part_id', 'priority', 'quantity_pending', 'due_date', 'recommended_machine_id', 'route_confidence'])
+            st.dataframe(pd_recommended_routes, use_container_width=True, hide_index=True)
+            st.success(f"✅ Showing {len(recommended_routes_data)} recommended routes")
+        else:
+            st.info("No recommended routes found")
+    except Exception as e:
+        st.error(f"❌ Error loading routes: {str(e)}")
     
-    # Add new todo section
-    st.subheader("➕ Add New Todo")
-    with st.form("add_todo_form", clear_on_submit=True):
-        new_task = st.text_input("Enter a new task:", placeholder="What do you need to do?")
-        submitted = st.form_submit_button("Add Todo", type="primary")
+    # Assignment Overrides Section
+    st.subheader("🔧 Assignment Overrides")
+    # Add new override form
+    st.write("**Add an Override:**")
+    with st.form("override_form"):
+        col1, col2, col3 = st.columns(3)
         
-        if submitted and new_task.strip():
-            if add_todo(new_task.strip()):
-                st.success("✅ Todo added successfully!")
-    
-    st.markdown("---")
-    
-    display_todos()
+        with col1:
+            part_id = st.selectbox("Select Part:", [row[0] for row in parts_data] if parts_data else [])
+        
+        with col2:
+            assigned_machine_id = st.selectbox("Select Machine:", [row[0] for row in machines_data] if machines_data else [])
+        
+        with col3:
+            notes = st.text_input("Reason:", placeholder="e.g., Maintenance required")
+        
+        submitted = st.form_submit_button("Set Override", type="primary")
+        
+        if submitted and part_id and assigned_machine_id and notes:
+            try:
+                add_override(part_id, assigned_machine_id, user_email or "Unknown", notes)
+                st.success("✅ Override set successfully!")
+                st.rerun()  # Refresh the page to show the new override
+            except Exception as e:
+                st.error(f"❌ Error setting override: {str(e)}")
+
+    # Show past overrides
+    try:        
+        if overrides_data:
+            st.write("**Override History:**")
+            import pandas as pd
+            pd_overrides = pd.DataFrame(overrides_data, columns=['part_id', 'assigned_machine_id', 'assigned_by', 'assigned_at', 'notes'])
+            st.dataframe(pd_overrides, use_container_width=True, hide_index=True)
+        else:
+            st.info("No overrides currently set")
+            
+    except Exception as e:
+        st.error(f"❌ Error loading overrides: {str(e)}")
 
 if __name__ == "__main__":
     main() 
