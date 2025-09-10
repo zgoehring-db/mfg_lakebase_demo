@@ -1,0 +1,15 @@
+# Database connection settings for Lakebase
+export PGHOST=your-lakebase-instance.database.azuredatabricks.net
+export PGPORT=5432
+export PGUSER=your-email@databricks.com
+export PGDATABASE=your-database-name
+export PGSSLMODE=require
+export PGAPPNAME=shop_floor_app
+
+# Lakebase instance name
+export LAKEBASE_INSTANCE_NAME=your-lakebase-instance-name
+
+# Table configuration
+export LAKEBASE_SCHEMA=mfg_lakebase_demo
+export LAKEBASE_ROUTES_TABLE_NAME=recommended_routes_synced_table
+export LAKEBASE_OVERRIDES_TABLE_NAME=assignment_overrides
