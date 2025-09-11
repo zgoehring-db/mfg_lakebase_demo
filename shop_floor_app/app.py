@@ -15,7 +15,7 @@ last_password_refresh = 0
 connection_pool = None
 
 user_email = st.context.headers.get('X-Forwarded-Email')
-
+user = workspace_client.current_user.me().user_name
 
 def refresh_oauth_token():
     """Refresh OAuth token if expired."""
@@ -25,7 +25,7 @@ def refresh_oauth_token():
         try:
             cred = workspace_client.database.generate_database_credential(
                 request_id=str(uuid.uuid4()),
-                instance_names=[os.getenv('PGINSTANCE')]
+                instance_names=[os.getenv('LAKEBASE_INSTANCE_NAME')]
             )
             postgres_password = cred.token
             last_password_refresh = time.time()
@@ -40,7 +40,7 @@ def get_connection_pool():
         refresh_oauth_token()
         conn_string = (
             f"dbname={os.getenv('PGDATABASE')} "
-            f"user={os.getenv('DATABRICKS_CLIENT_ID')} "
+            f"user={user} "
             f"password={postgres_password} "
             f"host={os.getenv('PGHOST')} "
             f"port={os.getenv('PGPORT')} "

@@ -5,10 +5,10 @@ env:
     value: 'pg_mfg_db'
   - name: 'PGAPPNAME'
     value: 'shop_floor_app'
-  - name: 'PGINSTANCE'
+  - name: 'LAKEBASE_INSTANCE_NAME'
     value: 'zg-mfg-lakebase-demo'
 
-# table info
+# lakebase table info
   - name: 'LAKEBASE_SCHEMA'
     value: 'mfg_lakebase_demo'
   - name: 'LAKEBASE_OVERRIDES_TABLE_NAME'
