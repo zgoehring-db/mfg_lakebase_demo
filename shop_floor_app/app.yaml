@@ -1,1 +1,22 @@
 command: ["streamlit", "run", "app.py"]
+env:
+# lakebase connection info
+  - name: 'PGDATABASE'
+    value: 'pg_mfg_db'
+  - name: 'PGAPPNAME'
+    value: 'shop_floor_app'
+  - name: 'PGINSTANCE'
+    value: 'zg-mfg-lakebase-demo'
+
+# table info
+  - name: 'LAKEBASE_SCHEMA'
+    value: 'mfg_lakebase_demo'
+  - name: 'LAKEBASE_OVERRIDES_TABLE_NAME'
+    value: 'assignment_overrides'
+  - name: 'LAKEBASE_ROUTES_TABLE_NAME'
+    value: 'recommended_routes_synced_table'
+
+# streamlit config
+  - name: 'STREAMLIT_GATHER_USAGE_STATS'
+    value: 'false'
+  
