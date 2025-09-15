@@ -1,133 +1,19 @@
 import streamlit as st
-import psycopg
-import os
-import time
-import uuid
-import re
 from databricks import sdk
-from psycopg import sql
-from psycopg_pool import ConnectionPool
+from data_access import (
+    fetch_recommended_routes,
+    fetch_machines,
+    fetch_parts,
+    fetch_overrides,
+    add_override,
+    part_lookup,
+    count_overdue_parts
+)
 
-# Database connection setup
+# Get user information
 workspace_client = sdk.WorkspaceClient()
-postgres_password = None
-last_password_refresh = 0
-connection_pool = None
-
 user_email = st.context.headers.get('X-Forwarded-Email')
 user = workspace_client.current_user.me().user_name
-
-def refresh_oauth_token():
-    """Refresh OAuth token if expired."""
-    global postgres_password, last_password_refresh
-    if postgres_password is None or time.time() - last_password_refresh > 900:
-        print("Refreshing PostgreSQL OAuth token")
-        try:
-            cred = workspace_client.database.generate_database_credential(
-                request_id=str(uuid.uuid4()),
-                instance_names=[os.getenv('LAKEBASE_INSTANCE_NAME')]
-            )
-            postgres_password = cred.token
-            last_password_refresh = time.time()
-        except Exception as e:
-            st.error(f"❌ Failed to refresh token: {str(e)}")
-            st.stop()
-
-def get_connection_pool():
-    """Get or create the connection pool."""
-    global connection_pool
-    if connection_pool is None:
-        refresh_oauth_token()
-        conn_string = (
-            f"dbname={os.getenv('PGDATABASE')} "
-            f"user={user} "
-            f"password={postgres_password} "
-            f"host={os.getenv('PGHOST')} "
-            f"port={os.getenv('PGPORT')} "
-            f"sslmode={os.getenv('PGSSLMODE', 'require')} "
-            f"application_name={os.getenv('PGAPPNAME')}"
-        )
-        connection_pool = ConnectionPool(conn_string, min_size=2, max_size=10)
-    return connection_pool
-
-def get_connection():
-    """Get a connection from the pool."""
-    global connection_pool
-    
-    # Recreate pool if token expired
-    if postgres_password is None or time.time() - last_password_refresh > 900:
-        if connection_pool:
-            connection_pool.close()
-            connection_pool = None
-    
-    return get_connection_pool().connection()
-
-def fetch_recommended_routes():
-    """Fetch the recommended routes from Lakebase."""
-    schema = os.getenv('LAKEBASE_SCHEMA')
-    routes_table_name = os.getenv('LAKEBASE_ROUTES_TABLE_NAME')
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"""
-                SELECT part_id, priority, quantity_pending, due_date, recommended_machine_id, route_confidence
-                FROM {schema}.{routes_table_name}
-                ORDER BY priority DESC, due_date ASC
-            """)
-            return cur.fetchall()
-
-def fetch_machines():
-    """Fetch the machines from Lakebase."""
-    schema = os.getenv('LAKEBASE_SCHEMA')
-    routes_table_name = os.getenv('LAKEBASE_ROUTES_TABLE_NAME')
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"""
-                SELECT distinct recommended_machine_id
-                FROM {schema}.{routes_table_name}
-                ORDER BY 1 asc
-            """)
-            return cur.fetchall()
-
-def fetch_parts():
-    """Fetch the machines from Lakebase."""
-    schema = os.getenv('LAKEBASE_SCHEMA')
-    routes_table_name = os.getenv('LAKEBASE_ROUTES_TABLE_NAME')
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"""
-                SELECT distinct part_id,  
-                    CAST(SUBSTRING(part_id FROM 'part_(.*)') AS INTEGER) as part_num
-                FROM {schema}.{routes_table_name}
-                ORDER BY part_num ASC
-            """)
-            return cur.fetchall()
-
-def fetch_overrides():
-    """Fetch current assignment overrides."""
-    schema = os.getenv('LAKEBASE_SCHEMA')
-    overrides_table = os.getenv('LAKEBASE_OVERRIDES_TABLE_NAME')
-    
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"""
-                SELECT part_id, assigned_machine_id, assigned_by, assigned_at, notes
-                FROM {schema}.{overrides_table}
-                ORDER BY assigned_at DESC
-            """)
-            return cur.fetchall()
-
-def add_override(part_id, assigned_machine_id, assigned_by, notes):
-    """Add or update an assignment override."""
-    schema = os.getenv('LAKEBASE_SCHEMA')
-    overrides_table = os.getenv('LAKEBASE_OVERRIDES_TABLE_NAME')
-    
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"""
-                INSERT INTO {schema}.{overrides_table} (part_id, assigned_machine_id, assigned_by, assigned_at, notes)
-                VALUES (%s, %s, %s, CURRENT_TIMESTAMP, %s)
-            """, (part_id, assigned_machine_id, assigned_by, notes))
-            conn.commit()
 
 # Streamlit UI
 def main():
@@ -137,8 +23,24 @@ def main():
         layout="wide"
     )
     
-    st.title("🏭 Shop Floor Routing Manager")
-    st.caption(f"Signed in as: {user_email}")
+    
+    # Load external CSS file
+    import os
+    
+    def load_css():
+        css_path = os.path.join(os.path.dirname(__file__), 'styles.css')
+        with open(css_path, 'r') as f:
+            return f.read()
+    
+    st.markdown(f"<style>{load_css()}</style>", unsafe_allow_html=True)
+    
+    # Modern dashboard header
+    st.markdown("""
+    <div class="dashboard-header">
+        <h1>Shop Floor Routing Manager</h1>
+        <div class="user-info">👤 {}</div>
+    </div>
+    """.format(user_email), unsafe_allow_html=True)
 
     # Load data
     try:
@@ -146,60 +48,159 @@ def main():
         machines_data = fetch_machines() 
         overrides_data = fetch_overrides()
         parts_data = fetch_parts()
+        overdue_count = count_overdue_parts()
     except Exception as e:
         st.error(f"❌ Error loading data: {str(e)}")
         st.stop()
 
-    st.subheader("Recommended Routes")
-    try:
-        if recommended_routes_data:
-            import pandas as pd
-            pd_recommended_routes = pd.DataFrame(recommended_routes_data, columns=['part_id', 'priority', 'quantity_pending', 'due_date', 'recommended_machine_id', 'route_confidence'])
-            st.dataframe(pd_recommended_routes, use_container_width=True, hide_index=True)
-            st.success(f"✅ Showing {len(recommended_routes_data)} recommended routes")
-        else:
-            st.info("No recommended routes found")
-    except Exception as e:
-        st.error(f"❌ Error loading routes: {str(e)}")
+    # Shop Floor Metrics - Modern Cards
+    col1, col2, col3, col4 = st.columns(4)
     
-    # Assignment Overrides Section
-    st.subheader("🔧 Assignment Overrides")
-    # Add new override form
-    st.write("**Add an Override:**")
-    with st.form("override_form"):
-        col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("""
+        <div class="metric-card">
+            <h2 class="metric-header">Overdue Parts</h2>
+            <div class="metric-value" style="color: #ff4444;">{}</div>
+            <div class="metric-description" style="color: {};">{}</div>
+        </div>
+        """.format(
+            overdue_count,
+            "#ff6666" if overdue_count > 0 else "#44aa44",
+            "⚠️ Attention Required" if overdue_count > 0 else "✅ All On Track"
+        ), unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="metric-card">
+            <h2 class="metric-header">Total Parts</h2>
+            <div class="metric-value" style="color: #4444ff;">{}</div>
+            <div class="metric-description" style="color: #6666ff;">In Production Queue</div>
+        </div>
+        """.format(len(recommended_routes_data)), unsafe_allow_html=True)
+    
+    with col3:
+        high_priority = len([r for r in recommended_routes_data if r[1] == "high"])
+        st.markdown("""
+        <div class="metric-card">
+            <h2 class="metric-header">High Priority Parts</h2>
+            <div class="metric-value" style="color: #ff8800;">{}</div>
+            <div class="metric-description" style="color: #ffaa00;">Urgent Processing</div>
+        </div>
+        """.format(high_priority), unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown("""
+        <div class="metric-card">
+            <h2 class="metric-header">Manual Overrides</h2>
+            <div class="metric-value" style="color: #8844ff;">{}</div>
+            <div class="metric-description" style="color: #aa66ff;">Overrides Made</div>
+        </div>
+        """.format(len(overrides_data)), unsafe_allow_html=True)
+    
+    # Main content in card
+    st.markdown("""
+    <div class="content-card">
+        <h1 style="margin-top: 0; color: #2c3e50;">Shop Floor Operations</h1>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    tab1, tab2, tab3 = st.tabs([
+        "📋 **Recommended Routes**", 
+        "🔍 **Part Lookup**", 
+        "🔧 **Manual Overrides**"
+    ])
+    
+    with tab1:
+        # st.subheader("📋 Recommended Part to Machine Routes")
+        try:
+            if recommended_routes_data:
+                import pandas as pd
+                pd_recommended_routes = pd.DataFrame(recommended_routes_data, columns=['part_id', 'priority', 'quantity_pending', 'due_date', 'recommended_machine_id', 'route_confidence'])
+                summary_df = pd_recommended_routes[['part_id', 'priority', 'due_date', 'recommended_machine_id']]
+                
+                st.markdown('<p class="instruction-text">For more detailed part information, use the Part Lookup tab</p>', unsafe_allow_html=True)
+                st.dataframe(summary_df, use_container_width=True, hide_index=True, height=400)
+            else:
+                st.info("No recommended routes found")
+        except Exception as e:
+            st.error(f"❌ Error loading routes: {str(e)}")
+    
+    with tab2:
+        # st.subheader("🔍 Part Lookup")
+        
+        col1, col2 = st.columns([1.5, 2])
         
         with col1:
-            part_id = st.selectbox("Select Part:", [row[0] for row in parts_data] if parts_data else [])
+            st.markdown('<p class="instruction-text">Select a part to lookup and then click "Lookup Part"</p>', unsafe_allow_html=True)
+
+            selected_part = st.selectbox(" ", 
+                                        [row[0] for row in parts_data] if parts_data else [],
+                                        key="part_lookup")
+            
+            if st.button("Lookup Part", key="lookup_btn", type="primary"):
+                part_data = part_lookup(selected_part)
+                
+                if part_data:
+                    part_id, priority, quantity, due_date, machine_id, confidence, query_time = part_data                    
+                    st.success(f"✅ Found in {query_time}ms")
+                    st.caption("*Timing includes network latency, authentication, database connection setup, SQL query execution, etc.")
+                    
+                    with col2:
+                        st.write("**Part Details:**")
+                        st.json({
+                            "Part ID": part_id,
+                            "Priority": priority,
+                            "Quantity Pending": quantity,
+                            "Due Date": due_date,
+                            "Recommended Machine": machine_id,
+                            "Route Confidence": confidence
+                        })
+                else:
+                    st.error("❌ Part not found")
         
         with col2:
-            assigned_machine_id = st.selectbox("Select Machine:", [row[0] for row in machines_data] if machines_data else [])
+            pass
+    
+    with tab3:
+        # st.subheader("🔧 Route Assignment Manual Overrides")
+        st.markdown('<p class="instruction-text">Submit a part-to-machine override if the recommended route needs to be changed due to machine downtime, maintenance, or other operational constraints</p>', unsafe_allow_html=True)
         
-        with col3:
-            notes = st.text_input("Reason:", placeholder="e.g., Maintenance required")
-        
-        submitted = st.form_submit_button("Set Override", type="primary")
-        
-        if submitted and part_id and assigned_machine_id and notes:
-            try:
-                add_override(part_id, assigned_machine_id, user_email or "Unknown", notes)
-                st.success("✅ Override set successfully!")
-                st.rerun()  # Refresh the page to show the new override
-            except Exception as e:
-                st.error(f"❌ Error setting override: {str(e)}")
-
-    # Show past overrides
-    try:        
-        if overrides_data:
-            st.write("**Override History:**")
-            import pandas as pd
-            pd_overrides = pd.DataFrame(overrides_data, columns=['part_id', 'assigned_machine_id', 'assigned_by', 'assigned_at', 'notes'])
-            st.dataframe(pd_overrides, use_container_width=True, hide_index=True)
-        else:
-            st.info("No overrides currently set")
+        # Add new override form
+        st.write("**Add an Override:**")
+        with st.form("override_form"):
+            col1, col2, col3 = st.columns(3)
             
-    except Exception as e:
-        st.error(f"❌ Error loading overrides: {str(e)}")
+            with col1:
+                part_id = st.selectbox("Select Part:", [row[0] for row in parts_data] if parts_data else [])
+            
+            with col2:
+                assigned_machine_id = st.selectbox("Select Machine:", [row[0] for row in machines_data] if machines_data else [])
+            
+            with col3:
+                notes = st.text_input("Reason:", placeholder="e.g., Maintenance required")
+            
+            submitted = st.form_submit_button("Set Override", type="primary")
+            
+            if submitted and part_id and assigned_machine_id and notes:
+                try:
+                    add_override(part_id, assigned_machine_id, user_email or "Unknown", notes)
+                    st.success("✅ Override set successfully!")
+                    st.rerun()  # Refresh the page to show the new override
+                except Exception as e:
+                    st.error(f"❌ Error setting override: {str(e)}")
+
+        # Show past overrides
+        try:        
+            if overrides_data:
+                st.write("**Override History:**")
+                import pandas as pd
+                pd_overrides = pd.DataFrame(overrides_data, columns=['part_id', 'assigned_machine_id', 'assigned_by', 'assigned_at', 'notes'])
+                st.dataframe(pd_overrides, use_container_width=True, hide_index=True)
+            else:
+                st.info("No overrides currently set")
+                
+        except Exception as e:
+            st.error(f"❌ Error loading overrides: {str(e)}")
 
 if __name__ == "__main__":
     main() 
