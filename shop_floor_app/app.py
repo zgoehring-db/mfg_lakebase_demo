@@ -9,6 +9,7 @@ from data_access import (
     part_lookup,
     count_overdue_parts
 )
+from table_styling import get_table_styles, create_scrollable_table
 
 # Get user information
 workspace_client = sdk.WorkspaceClient()
@@ -99,8 +100,8 @@ def main():
     
     # Main content in card
     st.markdown("""
-    <div class="content-card">
-        <h1 style="margin-top: 0; color: #2c3e50;">Shop Floor Operations</h1>
+    <div style="background: white; padding: 8px 20px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); border: 1px solid rgba(0,0,0,0.05); margin-bottom: 1rem;">
+        <h2 style="margin: 0; color: #2c3e50; font-size: 2em; line-height: 1.2; font-weight: 600;">Shop Floor Operations</h2>
     </div>
     """, unsafe_allow_html=True)
     
@@ -116,10 +117,33 @@ def main():
             if recommended_routes_data:
                 import pandas as pd
                 pd_recommended_routes = pd.DataFrame(recommended_routes_data, columns=['part_id', 'priority', 'quantity_pending', 'due_date', 'recommended_machine_id', 'route_confidence'])
-                summary_df = pd_recommended_routes[['part_id', 'priority', 'due_date', 'recommended_machine_id']]
+                summary_df = pd_recommended_routes[['part_id', 'priority', 'due_date', 'recommended_machine_id', 'route_confidence']]
                 
                 st.markdown('<p class="instruction-text">For more detailed part information, use the Part Lookup tab</p>', unsafe_allow_html=True)
-                st.dataframe(summary_df, use_container_width=True, hide_index=True, height=400)
+                
+                # Add simple sorting controls
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    sort_by = st.selectbox("Sort by:", ["Part ID", "Priority", "Due Date", "Recommended Machine", "Route Confidence"])
+                with col2:
+                    sort_order = st.selectbox("Order:", ["Ascending", "Descending"])
+                
+                # Apply sorting
+                if sort_by == "Part ID":
+                    summary_df = summary_df.sort_values('part_id', ascending=(sort_order == "Ascending"))
+                elif sort_by == "Priority":
+                    summary_df = summary_df.sort_values('priority', ascending=(sort_order == "Ascending"))
+                elif sort_by == "Due Date":
+                    summary_df = summary_df.sort_values('due_date', ascending=(sort_order == "Ascending"))
+                elif sort_by == "Recommended Machine":
+                    summary_df = summary_df.sort_values('recommended_machine_id', ascending=(sort_order == "Ascending"))
+                elif sort_by == "Route Confidence":
+                    summary_df = summary_df.sort_values('route_confidence', ascending=(sort_order == "Ascending"))
+                
+                # Apply table styling and create scrollable container
+                styled_df = summary_df.style.set_table_styles(get_table_styles())
+                scrollable_table = create_scrollable_table(styled_df)
+                st.markdown(scrollable_table, unsafe_allow_html=True)
             else:
                 st.info("No recommended routes found")
         except Exception as e:
@@ -141,20 +165,47 @@ def main():
                 part_data = part_lookup(selected_part)
                 
                 if part_data:
-                    part_id, priority, quantity, due_date, machine_id, confidence, query_time = part_data                    
+                    # Unpack all the fields from the part backlog table (14 fields + query_time)
+                    (part_id, priority, quantity, due_date, material, part_type, 
+                     quality_level, surface_finish, tolerance, weight_kg, 
+                     dimensions, drawing_number, revision, estimated_hours, query_time) = part_data
+                    
                     st.success(f"✅ Found in {query_time}ms")
                     st.caption("*Timing includes network latency, authentication, database connection setup, SQL query execution, etc.")
                     
                     with col2:
-                        st.write("**Part Details:**")
-                        st.json({
-                            "Part ID": part_id,
-                            "Priority": priority,
-                            "Quantity Pending": quantity,
-                            "Due Date": due_date,
-                            "Recommended Machine": machine_id,
-                            "Route Confidence": confidence
-                        })
+                        st.markdown('<p class="instruction-text">Part Details:</p>', unsafe_allow_html=True)
+                        
+                        # Organize the data into logical sections
+                        col2a, col2b = st.columns(2)
+                        
+                        with col2a:
+                            st.markdown('<h5 style="color: #2c3e50; margin-bottom: 10px;">📋 Basic Information</h3>', unsafe_allow_html=True)
+                            st.json({
+                                "Part ID": part_id,
+                                "Priority": priority,
+                                "Quantity Pending": quantity,
+                                "Due Date": str(due_date),
+                                "Material": material,
+                                "Part Type": part_type
+                            })
+                            
+                            st.markdown('<h5 style="color: #2c3e50; margin-bottom: 10px;">⚙️ Technical Specifications</h3>', unsafe_allow_html=True)
+                            st.json({
+                                "Quality Level": quality_level,
+                                "Surface Finish": surface_finish,
+                                "Tolerance": tolerance,
+                                "Weight (kg)": weight_kg,
+                                "Dimensions": dimensions
+                            })
+                        
+                        with col2b:
+                            st.markdown('<h5 style="color: #2c3e50; margin-bottom: 10px;">📐 Engineering Details</h3>', unsafe_allow_html=True)
+                            st.json({
+                                "Drawing Number": drawing_number,
+                                "Revision": revision,
+                                "Estimated Hours": estimated_hours
+                            })
                 else:
                     st.error("❌ Part not found")
         
@@ -166,7 +217,7 @@ def main():
         st.markdown('<p class="instruction-text">Submit a part-to-machine override if the recommended route needs to be changed due to machine downtime, maintenance, or other operational constraints</p>', unsafe_allow_html=True)
         
         # Add new override form
-        st.write("**Add an Override:**")
+        st.markdown('<p class="manual-overrides-section-header">Add an Override:</p>', unsafe_allow_html=True)
         with st.form("override_form"):
             col1, col2, col3 = st.columns(3)
             
@@ -192,10 +243,12 @@ def main():
         # Show past overrides
         try:        
             if overrides_data:
-                st.write("**Override History:**")
+                st.markdown('<p class="manual-overrides-section-header">Override History:</p>', unsafe_allow_html=True)
                 import pandas as pd
                 pd_overrides = pd.DataFrame(overrides_data, columns=['part_id', 'assigned_machine_id', 'assigned_by', 'assigned_at', 'notes'])
-                st.dataframe(pd_overrides, use_container_width=True, hide_index=True)
+                
+                # Use simple st.dataframe for override history
+                st.dataframe(pd_overrides, use_container_width=True)
             else:
                 st.info("No overrides currently set")
                 

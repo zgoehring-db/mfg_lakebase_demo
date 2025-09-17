@@ -16,6 +16,7 @@ user = workspace_client.current_user.me().user_name
 SCHEMA = os.getenv('LAKEBASE_SCHEMA')
 ROUTES_TABLE_NAME = os.getenv('LAKEBASE_ROUTES_TABLE_NAME')
 OVERRIDES_TABLE_NAME = os.getenv('LAKEBASE_OVERRIDES_TABLE_NAME')
+PART_LOOKUP_TABLE_NAME = os.getenv('LAKEBASE_PART_LOOKUP_TABLE_NAME')
 
 def refresh_oauth_token():
     """Refresh OAuth token if expired."""
@@ -107,15 +108,29 @@ def fetch_overrides():
             return cur.fetchall()
 
 def part_lookup(part_id):
-    """Look up a single part by ID from the recommended routes table with timing."""
+    """Look up a single part by ID from the part backlog table with timing."""
     import time
     start_time = time.time()
     
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(f"""
-                SELECT part_id, priority, quantity_pending, due_date, recommended_machine_id, route_confidence
-                FROM {SCHEMA}.{ROUTES_TABLE_NAME}
+                SELECT 
+                    part_id, 
+                    priority, 
+                    quantity_pending, 
+                    due_date, 
+                    material, 
+                    part_type, 
+                    quality_level, 
+                    surface_finish, 
+                    tolerance, 
+                    weight_kg, 
+                    dimensions, 
+                    drawing_number, 
+                    revision, 
+                    estimated_hours
+                FROM {SCHEMA}.{PART_LOOKUP_TABLE_NAME}
                 WHERE part_id = %s
             """, (part_id,))
             result = cur.fetchone()

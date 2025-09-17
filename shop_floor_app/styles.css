@@ -118,12 +118,12 @@
 
 /* Inactive tabs font size */
 .stTabs [data-baseweb="tab"] [data-testid="stMarkdownContainer"] p {
-    font-size: 28px !important;
+    font-size: 20px !important;
 }
 
 /* Active tab font size */
 .stTabs [aria-selected="true"] [data-testid="stMarkdownContainer"] p {
-    font-size: 32px !important;
+    font-size: 20px !important;
 }
 
 .stTabs [aria-selected="true"] {
@@ -133,11 +133,12 @@
 }
 
 .dataframe {
-    font-size: 14px;
+    font-size: 16px !important;
     border-radius: 8px !important;
     overflow: hidden !important;
     box-shadow: 0 2px 10px rgba(0,0,0,0.05) !important;
 }
+
 
 /* Info box styling */
 .info-box {
@@ -165,4 +166,12 @@
     color: #333333 !important;
     text-align: left !important;
     margin: 1rem 0 !important;
+}
+
+/* Manual overrides tab section headers */
+.manual-overrides-section-header {
+    font-size: 20px !important;
+    font-weight: 600 !important;
+    color: #2c3e50 !important;
+    margin: 1rem 0 0.5rem 0 !important;
 }
